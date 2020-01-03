@@ -1,280 +1,382 @@
+/*  Lattice Boltzmann sample, written in C++, using the OpenLB
+ *  library
+ *
+ *  Copyright (C) 2015 Mathias J. Krause, Patrick Nathan
+ *  E-mail contact: info@openlb.net
+ *  The most recent release of OpenLB can be downloaded at
+ *  <http://www.openlb.net/>
+ *
+ *  This program is free software; you can redistribute it and/or
+ *  modify it under the terms of the GNU General Public License
+ *  as published by the Free Software Foundation; either version 2
+ *  of the License, or (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public
+ *  License along with this program; if not, write to the Free
+ *  Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
+ *  Boston, MA  02110-1301, USA.
+ */
+
+/* nozzle3d.cpp:
+ * This example examines a turbulent flow in a nozzle injection tube. At the
+ * main inlet, either a block profile or a power 1/7 profile is imposed as a
+ * Dirchlet velocity boundary condition, whereas at the outlet a
+ * Dirichlet pressure condition is set by p=0 (i.e. rho=1).
+ *
+ * The example shows the usage of turbulent models.
+ *
+ * The results of a simular simulation setup are publish in TODO
+ */
+
 #include "olb3D.h"
-#include "olb3D.hh"   // use only generic version!
-#include <cstdlib>
+#ifndef OLB_PRECOMPILED // Unless precompiled version is used
+#include "olb3D.hh"     // Include full template code
+#endif
+#include <vector>
+#include <cmath>
 #include <iostream>
+#include <fstream>
 
 using namespace olb;
 using namespace olb::descriptors;
 using namespace olb::graphics;
+using namespace olb::util;
 using namespace std;
 
 typedef double T;
-#define DESCRIPTOR ShanChenDynOmegaForcedD3Q19Descriptor
 
+// Choose your turbulent model of choice
+//#define RLB
+#define Smagorinsky //default
+//#define ConsitentStrainSmagorinsky
+//#define ShearSmagorinsky
+//#define Krause
 
-// Parameters for the simulation setup
-const int nx   = 70;
-const int ny   = 35;
-const int nz   = 70;
-const int maxIter  = 4000;
-
-
-// Stores geometry information in form of material numbers
-void prepareGeometry( SuperGeometry3D<T>& superGeometry ) {
-
-  OstreamManager clout( std::cout,"prepareGeometry" );
-  clout << "Prepare Geometry ..." << std::endl;
-
-  // Sets material number for fluid and boundary
-  superGeometry.rename( 0,1 );
-
-  Vector<T,3> origin1( -2. );
-  Vector<T,3> origin2( -2., ny/2., -2. );
-  Vector<T,3> origin3( -2., ny-1., -2. );
-  Vector<T,3> extend1( nx+3., 2., nz+3. );
-  Vector<T,3> extend2( nx+3., ny/2+2., nz+3. );
-
-  IndicatorCuboid3D<T> bottom( extend1, origin1 );
-  IndicatorCuboid3D<T> upper( extend2, origin2 );
-  IndicatorCuboid3D<T> top( extend1, origin3 );
-
-  superGeometry.rename( 1,2,upper );
-  superGeometry.rename( 1,3,bottom );
-  superGeometry.rename( 2,4,top );
-
-  // Removes all not needed boundary voxels outside the surface
-  //superGeometry.clean();
-  // Removes all not needed boundary voxels inside the surface
-  superGeometry.innerClean();
-  superGeometry.checkForErrors();
-
-  superGeometry.print();
-
-  clout << "Prepare Geometry ... OK" << std::endl;
-}
-
-
-void prepareLattice( SuperLattice3D<T, DESCRIPTOR>& sLatticeOne,
-                     SuperLattice3D<T, DESCRIPTOR>& sLatticeTwo,
-                     Dynamics<T, DESCRIPTOR>& bulkDynamics1,
-                     Dynamics<T, DESCRIPTOR>& bulkDynamics2,
-                     Dynamics<T, DESCRIPTOR>& bounceBackRho0,
-                     Dynamics<T, DESCRIPTOR>& bounceBackRho1,
-                     SuperGeometry3D<T>& superGeometry ) {
-
-  OstreamManager clout( std::cout,"prepareLattice" );
-  clout << "Prepare Lattice ..." << std::endl;
-
-  // The setup is: periodicity along horizontal direction, bounce-back on top
-  // and bottom. The upper half is initially filled with fluid 1 + random noise,
-  // and the lower half with fluid 2. Only fluid 1 experiences a forces,
-  // directed downwards.
-
-  // define lattice Dynamics
-  sLatticeOne.defineDynamics( superGeometry, 0, &instances::getNoDynamics<T, DESCRIPTOR>() );
-  sLatticeTwo.defineDynamics( superGeometry, 0, &instances::getNoDynamics<T, DESCRIPTOR>() );
-
-  sLatticeOne.defineDynamics( superGeometry, 1, &bulkDynamics1 );
-  sLatticeOne.defineDynamics( superGeometry, 2, &bulkDynamics1 );
-  sLatticeOne.defineDynamics( superGeometry, 3, &bulkDynamics1 );
-  sLatticeOne.defineDynamics( superGeometry, 4, &bulkDynamics1 );
-  sLatticeTwo.defineDynamics( superGeometry, 1, &bulkDynamics2 );
-  sLatticeTwo.defineDynamics( superGeometry, 2, &bulkDynamics2 );
-  sLatticeTwo.defineDynamics( superGeometry, 3, &bulkDynamics2 );
-  sLatticeTwo.defineDynamics( superGeometry, 4, &bulkDynamics2 );
-
-  sLatticeOne.defineDynamics( superGeometry, 3, &bounceBackRho0 );
-  sLatticeTwo.defineDynamics( superGeometry, 3, &bounceBackRho1 );
-  sLatticeOne.defineDynamics( superGeometry, 4, &bounceBackRho1 );
-  sLatticeTwo.defineDynamics( superGeometry, 4, &bounceBackRho0 );
-
-  clout << "Prepare Lattice ... OK" << std::endl;
-}
-
-void setBoundaryValues( SuperLattice3D<T, DESCRIPTOR>& sLatticeOne,
-                        SuperLattice3D<T, DESCRIPTOR>& sLatticeTwo,
-                        T force, int iT, SuperGeometry3D<T>& superGeometry ) {
-
-  if ( iT==0 ) {
-
-    AnalyticalConst3D<T,T> noise( 4.e-2 );
-    std::vector<T> v( 3,T() );
-    AnalyticalConst3D<T,T> zeroV( v );
-    AnalyticalConst3D<T,T> zero( 0. );
-    AnalyticalLinear3D<T,T> one( 0.,-force*descriptors::invCs2<T,DESCRIPTOR>(),0.,0.98+force*ny*descriptors::invCs2<T,DESCRIPTOR>() );
-    AnalyticalConst3D<T,T> onePlus( 0.98+force*ny/2.*descriptors::invCs2<T,DESCRIPTOR>() );
-    AnalyticalRandom3D<T,T> random;
-    AnalyticalIdentity3D<T,T> randomOne( random*noise+one );
-    AnalyticalIdentity3D<T,T> randomPlus( random*noise+onePlus );
-    std::vector<T> F( 3,T() );
-    F[1] = -force;
-    AnalyticalConst3D<T,T> f( F );
-
-    // for each material set the defineRhou and the Equilibrium
-
-    sLatticeOne.defineRhoU( superGeometry, 1, zero, zeroV );
-    sLatticeOne.iniEquilibrium( superGeometry, 1, zero, zeroV );
-    sLatticeOne.defineField<descriptors::EXTERNAL_FORCE>( superGeometry, 1, f );
-    sLatticeTwo.defineRhoU( superGeometry, 1, randomPlus, zeroV );
-    sLatticeTwo.iniEquilibrium( superGeometry, 1, randomPlus, zeroV );
-
-    sLatticeOne.defineRhoU( superGeometry, 2, randomOne, zeroV );
-    sLatticeOne.iniEquilibrium( superGeometry, 2, randomOne, zeroV );
-    sLatticeOne.defineField<descriptors::EXTERNAL_FORCE>( superGeometry, 2, f );
-    sLatticeTwo.defineRhoU( superGeometry, 2, zero, zeroV );
-    sLatticeTwo.iniEquilibrium( superGeometry, 2, zero, zeroV );
-
-    /*sLatticeOne.defineRhoU(superGeometry, 3, zero, zeroV);
-    sLatticeOne.iniEquilibrium(superGeometry, 3, zero, zeroV);
-    sLatticeOne.defineField<descriptors:::EXTERNAL_FORCE>(superGeometry, 3, f);
-    sLatticeTwo.defineRhoU(superGeometry, 3, one, zeroV);
-    sLatticeTwo.iniEquilibrium(superGeometry, 3, one, zeroV);
-
-    sLatticeOne.defineRhoU(superGeometry, 4, one, zeroV);
-    sLatticeOne.iniEquilibrium(superGeometry, 4, one, zeroV);
-    sLatticeOne.defineField<descriptors:::EXTERNAL_FORCE>(superGeometry, 4, f);
-    sLatticeTwo.defineRhoU(superGeometry, 4, zero, zeroV);
-    sLatticeTwo.iniEquilibrium(superGeometry, 4, zero, zeroV);*/
-
-    // Make the lattice ready for simulation
-    sLatticeOne.initialize();
-    sLatticeTwo.initialize();
-  }
-}
-
-void getResults( SuperLattice3D<T, DESCRIPTOR>& sLatticeTwo,
-                 SuperLattice3D<T, DESCRIPTOR>& sLatticeOne, int iT,
-                 SuperGeometry3D<T>& superGeometry, Timer<T>& timer ) {
-
-  OstreamManager clout( std::cout,"getResults" );
-  SuperVTMwriter3D<T> vtmWriter( "rayleighTaylor3dsLatticeOne" );
-
-  const int vtkIter  = 50;
-  const int statIter = 10;
-
-  if ( iT==0 ) {
-    // Writes the geometry, cuboid no. and rank no. as vti file for visualization
-    SuperLatticeGeometry3D<T, DESCRIPTOR> geometry( sLatticeOne, superGeometry );
-    SuperLatticeCuboid3D<T, DESCRIPTOR> cuboid( sLatticeOne );
-    SuperLatticeRank3D<T, DESCRIPTOR> rank( sLatticeOne );
-    vtmWriter.write( geometry );
-    vtmWriter.write( cuboid );
-    vtmWriter.write( rank );
-    vtmWriter.createMasterFile();
-  }
-
-  // Get statistics
-  if ( iT%statIter==0 && iT > 0 ) {
-    // Timer console output
-    timer.update( iT );
-    timer.printStep();
-
-    clout << "averageRhoFluidOne="   << sLatticeOne.getStatistics().getAverageRho();
-    clout << "; averageRhoFluidTwo=" << sLatticeTwo.getStatistics().getAverageRho() << std::endl;
-  }
-
-  // Writes the VTK files
-  if ( iT%vtkIter==0 ) {
-    clout << "Writing VTK ..." << std::endl;
-    SuperLatticeVelocity3D<T, DESCRIPTOR> velocity( sLatticeOne );
-    SuperLatticeDensity3D<T, DESCRIPTOR> density( sLatticeOne );
-    vtmWriter.addFunctor( velocity );
-    vtmWriter.addFunctor( density );
-    vtmWriter.write( iT );
-
-    BlockReduction3D2D<T> planeReduction( density, {0, 0, 1} );
-    // write output as JPEG
-    heatmap::write(planeReduction, iT);
-
-    clout << "Writing VTK ... OK" << std::endl;
-  }
-}
-
-
-int main( int argc, char *argv[] ) {
-
-  // === 1st Step: Initialization ===
-
-  olbInit( &argc, &argv );
-  singleton::directories().setOutputDir( "./tmp/" );
-  OstreamManager clout( std::cout,"main" );
-
-  const T omega1 = 1.0;
-  const T omega2 = 1.0;
-  const T G      = 3.;
-  T force        = 7./( T )ny/( T )ny;
-
-  // === 2nd Step: Prepare Geometry ===
-  // Instantiation of a cuboidGeometry with weights
-
-#ifdef PARALLEL_MODE_MPI
-  CuboidGeometry3D<T> cGeometry( 0, 0, 0, 1, nx, ny, nz, singleton::mpi().getSize() );
+#ifdef ShearSmagorinsky
+#define DESCRIPTOR ShearSmagorinskyD3Q19Descriptor
 #else
-  CuboidGeometry3D<T> cGeometry( 0, 0, 0, 1, nx, ny, nz, 1 );
+#define DESCRIPTOR D3Q19<>
 #endif
 
-  cGeometry.setPeriodicity( true, false, true );
+// Parameters for the simulation setup
+const int N = 3;                 // resolution of the model, for RLB N>=5, others N>=2, but N>=5 recommended
+const int M = 1;                 // time discretization refinement
+const int inflowProfileMode = 0; // block profile (mode=0), power profile (mode=1)
+const T maxPhysT = 200.;         // max. simulation time in s, SI unit
 
-  HeuristicLoadBalancer<T> loadBalancer( cGeometry );
+template <typename T, typename _DESCRIPTOR>
+class TurbulentVelocity3D : public AnalyticalF3D<T,T> {
 
-  SuperGeometry3D<T> superGeometry( cGeometry,loadBalancer,2 );
+protected:
+    // block profile (mode=0), power profile (mode=1)
+    int _mode;
+    T rho;
+    T nu;
+    T u0;
+    T p0;
+    T charL;
+    T dx;
 
-  prepareGeometry( superGeometry );
+public:
+    TurbulentVelocity3D( UnitConverter<T,_DESCRIPTOR> const& converter, int mode=0 ) : AnalyticalF3D<T,T>( 3 ) {
+        _mode = mode;
+        u0 = converter.getCharLatticeVelocity();
+        rho = converter.getPhysDensity();
+        nu = converter.getPhysViscosity();
+        charL = converter.getCharPhysLength();
+        p0 = converter.getCharPhysPressure();
+        dx = converter.getConversionFactorLength();
 
-  // === 3rd Step: Prepare Lattice ===
+        this->getName() = "turbulentVelocity3d";
+    };
 
-  SuperLattice3D<T, DESCRIPTOR> sLatticeOne( superGeometry );
-  SuperLattice3D<T, DESCRIPTOR> sLatticeTwo( superGeometry );
+    bool operator()( T output[], const S input[] ) override {
+        T y = input[1];
+        T z = input[2];
+        // block profile inititalization
+        T u_calc = u0;
+        // power profile inititalization
+        if ( _mode==1 ) {
+            T obst_y = 5.5+dx;
+            T obst_z = 5.5+dx;
+            T obst_r = 0.5;
 
-  ForcedBGKdynamics<T, DESCRIPTOR> bulkDynamics1 (
-    omega1, instances::getExternalVelocityMomenta<T,DESCRIPTOR>() );
-  ForcedBGKdynamics<T, DESCRIPTOR> bulkDynamics2 (
-    omega2, instances::getExternalVelocityMomenta<T,DESCRIPTOR>() );
+            T B      = 5.5;
+            T kappa  = 0.4;
+            T ReTau  = 183.6;
 
-  // A bounce-back node with fictitious density 1,
-  //   which is experienced by the partner fluid
-  BounceBack<T, DESCRIPTOR> bounceBackRho1( 1. );
-  // A bounce-back node with fictitious density 0,
-  //   which is experienced by the partner fluid
-  BounceBack<T, DESCRIPTOR> bounceBackRho0( 0. );
+            u_calc = u0/7.*( 2.*nu*ReTau/( charL*kappa )*log( fabs( 2.*ReTau/charL*( obst_r - sqrt( pow( y - obst_y, 2. )
+                                                                                                    + pow( z - obst_z, 2. ) ) )*1.5*( 1 + sqrt( pow( y - obst_y, 2. )
+                                                                                                                                                + pow( z - obst_z, 2. ) )/obst_r )/( 1 + 2.*pow( sqrt( pow( y - obst_y, 2. )
+                                                                                                                                                                                                       + pow( z - obst_z, 2. ) )/obst_r, 2. ) ) ) + B ) );
+        }
+        T a = -1., b = 1.;
+        T nRandom = rand()/( T )RAND_MAX*( b-a ) + a;
 
-  std::vector<T> rho0;
-  rho0.push_back( 1 );
-  rho0.push_back( 1 );
-  PsiEqualsRho<T,T> interactionPotential;
-  ShanChenForcedGenerator3D<T,DESCRIPTOR> coupling( G,rho0,interactionPotential );
+        output[0] = u_calc+  0.15*u0*nRandom;
+        output[1] = 0.15*u0*nRandom;
+        output[2] = 0.15*u0*nRandom;
+        return true;
+    };
+};
 
-  sLatticeOne.addLatticeCoupling(coupling, sLatticeTwo );
 
-  prepareLattice( sLatticeOne, sLatticeTwo, bulkDynamics1, bulkDynamics2,
-                  bounceBackRho0, bounceBackRho1, superGeometry );
+void prepareGeometry( UnitConverter<T,DESCRIPTOR> const& converter, IndicatorF3D<T>& indicator, SuperGeometry3D<T>& superGeometry ) {
 
-  // === 4th Step: Main Loop with Timer ===
-  int iT = 0;
-  clout << "starting simulation..." << endl;
-  Timer<T> timer( maxIter, superGeometry.getStatistics().getNvoxel() );
-  timer.start();
+    OstreamManager clout( std::cout,"prepareGeometry" );
+    clout << "Prepare Geometry ..." << std::endl;
 
-  for ( iT=0; iT<maxIter; ++iT ) {
+    // Sets material number for fluid and boundary
+    superGeometry.rename( 0,2,indicator );
 
-    // === 5th Step: Definition of Initial and Boundary Conditions ===
-    setBoundaryValues( sLatticeOne, sLatticeTwo, force, iT, superGeometry );
+    Vector<T,3> origin( T(),
+                        5.5*converter.getCharPhysLength()+converter.getConversionFactorLength(),
+                        5.5*converter.getCharPhysLength()+converter.getConversionFactorLength() );
 
-    // === 6th Step: Collide and Stream Execution ===
-    sLatticeOne.collideAndStream();
-    sLatticeTwo.collideAndStream();
+    Vector<T,3> extend( 4.*converter.getCharPhysLength()+5*converter.getConversionFactorLength(),
+                        5.5*converter.getCharPhysLength()+converter.getConversionFactorLength(),
+                        5.5*converter.getCharPhysLength()+converter.getConversionFactorLength() );
 
-    sLatticeOne.communicate();
-    sLatticeTwo.communicate();
+    IndicatorCylinder3D<T> inletCylinder( extend, origin, converter.getCharPhysLength() );
+    superGeometry.rename( 2,1,inletCylinder );
 
-    sLatticeOne.executeCoupling();
-    //sLatticeTwo.executeCoupling();
 
-    // === 7th Step: Computation and Output of the Results ===
-    getResults( sLatticeTwo, sLatticeOne, iT, superGeometry, timer );
-  }
+    origin[0]=4.*converter.getCharPhysLength();
+    origin[1]=5.5*converter.getCharPhysLength()+converter.getConversionFactorLength();
+    origin[2]=5.5*converter.getCharPhysLength()+converter.getConversionFactorLength();
 
-  timer.stop();
-  timer.printSummary();
+    extend[0]=54.*converter.getCharPhysLength();
+    extend[1]=5.5*converter.getCharPhysLength()+converter.getConversionFactorLength();
+    extend[2]=5.5*converter.getCharPhysLength()+converter.getConversionFactorLength();
+
+    IndicatorCylinder3D<T> injectionTube( extend, origin, 5.5*converter.getCharPhysLength() );
+    superGeometry.rename( 2,1,injectionTube );
+
+    origin[0]=converter.getConversionFactorLength();
+    origin[1]=5.5*converter.getCharPhysLength()+converter.getConversionFactorLength();
+    origin[2]=5.5*converter.getCharPhysLength()+converter.getConversionFactorLength();
+
+    extend[0]=T();
+    extend[1]=5.5*converter.getCharPhysLength()+converter.getConversionFactorLength();
+    extend[2]=5.5*converter.getCharPhysLength()+converter.getConversionFactorLength();
+
+    IndicatorCylinder3D<T> cylinderIN( extend, origin, converter.getCharPhysLength() );
+    superGeometry.rename( 1,3,cylinderIN );
+
+
+    origin[0]=54.*converter.getCharPhysLength()-converter.getConversionFactorLength();
+    origin[1]=5.5*converter.getCharPhysLength()+converter.getConversionFactorLength();
+    origin[2]=5.5*converter.getCharPhysLength()+converter.getConversionFactorLength();
+
+    extend[0]=54.*converter.getCharPhysLength();
+    extend[1]=5.5*converter.getCharPhysLength()+converter.getConversionFactorLength();
+    extend[2]=5.5*converter.getCharPhysLength()+converter.getConversionFactorLength();
+
+    IndicatorCylinder3D<T> cylinderOUT( extend, origin, 5.5*converter.getCharPhysLength() );
+    superGeometry.rename( 1,4,cylinderOUT );
+
+    // Removes all not needed boundary voxels outside the surface
+    superGeometry.clean();
+    // Removes all not needed boundary voxels inside the surface
+    superGeometry.innerClean();
+    superGeometry.checkForErrors();
+
+    superGeometry.print();
+
+    clout << "Prepare Geometry ... OK" << std::endl;
 }
 
+void prepareLattice( SuperLattice3D<T,DESCRIPTOR>& sLattice,
+                     UnitConverter<T,DESCRIPTOR> const& converter,
+                     Dynamics<T, DESCRIPTOR>& bulkDynamics,
+                     sOnLatticeBoundaryCondition3D<T,DESCRIPTOR>& bc,
+                     sOffLatticeBoundaryCondition3D<T,DESCRIPTOR>& offBc,
+                     SuperGeometry3D<T>& superGeometry ) {
+
+
+
+    OstreamManager clout( std::cout,"prepareLattice" );
+    clout << "Prepare Lattice ..." << std::endl;
+
+    const T omega = converter.getLatticeRelaxationFrequency();
+
+    // Material=0 -->do nothing
+    sLattice.defineDynamics( superGeometry, 0, &instances::getNoDynamics<T, DESCRIPTOR>() );
+
+    // Material=1 -->bulk dynamics
+    // Material=3 -->bulk dynamics (inflow)
+    // Material=4 -->bulk dynamics (outflow)
+    sLattice.defineDynamics( superGeometry.getMaterialIndicator({1, 3, 4}), &bulkDynamics );
+
+    // Material=2 -->bounce back
+    sLattice.defineDynamics( superGeometry, 2, &instances::getBounceBack<T, DESCRIPTOR>() );
+
+    bc.addVelocityBoundary( superGeometry, 3, omega );
+    bc.addPressureBoundary( superGeometry, 4, omega );
+
+    clout << "Prepare Lattice ... OK" << std::endl;
+}
+
+void setBoundaryValues( UnitConverter<T,DESCRIPTOR> const&converter,
+                        SuperLattice3D<T,DESCRIPTOR>& lattice, SuperGeometry3D<T>& superGeometry, int iT ) {
+
+    OstreamManager clout( std::cout,"setBoundaryValues" );
+
+    if ( iT==0 ) {
+        AnalyticalConst3D<T,T> rhoF( 1 );
+        std::vector<T> velocity( 3,T() );
+        AnalyticalConst3D<T,T> uF( velocity );
+
+        // Seeding of random fluctuations and definition of the velocity field
+        srand( time( nullptr ) );
+        TurbulentVelocity3D<T,DESCRIPTOR> uSol( converter, inflowProfileMode );
+
+        lattice.iniEquilibrium( superGeometry.getMaterialIndicator({1, 2, 4}), rhoF, uF );
+        lattice.iniEquilibrium( superGeometry, 3, rhoF, uSol );
+
+        lattice.defineU( superGeometry, 3, uSol );
+        lattice.defineRho( superGeometry, 4, rhoF );
+
+        // Make the lattice ready for simulation
+        lattice.initialize();
+    }
+}
+
+void getResults( SuperLattice3D<T, DESCRIPTOR>& sLattice,
+                 UnitConverter<T,DESCRIPTOR> const& converter, int iT,
+                 SuperGeometry3D<T>& superGeometry, Timer<T>& timer ) {
+
+    OstreamManager clout( std::cout,"getResults" );
+    SuperVTMwriter3D<T> vtmWriter( "nozzle3d" );
+
+    if ( iT==0 ) {
+        // Writes the geometry, cuboid no. and rank no. as vti file for visualization
+        SuperLatticeGeometry3D<T, DESCRIPTOR> geometry( sLattice, superGeometry );
+        SuperLatticeCuboid3D<T, DESCRIPTOR> cuboid( sLattice );
+        SuperLatticeRank3D<T, DESCRIPTOR> rank( sLattice );
+        vtmWriter.write( geometry );
+        vtmWriter.write( cuboid );
+        vtmWriter.write( rank );
+        vtmWriter.createMasterFile();
+    }
+
+    // Writes the vtk files
+    if ( iT%converter.getLatticeTime( maxPhysT/100. )==0 ) {
+        // Create the data-reading functors...
+        SuperLatticePhysVelocity3D<T, DESCRIPTOR> velocity( sLattice, converter );
+        SuperLatticePhysPressure3D<T, DESCRIPTOR> pressure( sLattice, converter );
+        vtmWriter.addFunctor( velocity );
+        vtmWriter.addFunctor( pressure );
+        vtmWriter.write( iT );
+
+        SuperEuklidNorm3D<T, DESCRIPTOR> normVel( velocity );
+        BlockReduction3D2D<T> planeReduction( normVel, {0, 1, 0} );
+        // write output as JPEG
+        heatmap::write(planeReduction, iT);
+    }
+
+    // Writes output on the console
+    if ( iT%converter.getLatticeTime( maxPhysT/200. )==0 ) {
+        timer.update( iT );
+        timer.printStep();
+        sLattice.getStatistics().print( iT, converter.getPhysTime( iT ) );
+    }
+}
+
+
+
+int main( int argc, char* argv[] ) {
+
+    // === 1st Step: Initialization ===
+
+    olbInit( &argc, &argv );
+    singleton::directories().setOutputDir( "./tmp/" );
+    OstreamManager clout( std::cout,"main" );
+    // display messages from every single mpi process
+    // clout.setMultiOutput(true);
+
+    UnitConverterFromResolutionAndRelaxationTime<T, DESCRIPTOR> const converter(
+            int {N},        // resolution: number of voxels per charPhysL
+            (T)   0.500018, // latticeRelaxationTime: relaxation time, have to be greater than 0.5!
+            (T)   1,        // charPhysLength: reference length of simulation geometry
+            (T)   1,        // charPhysVelocity: maximal/highest expected velocity during simulation in __m / s__
+            (T)   0.0002,   // physViscosity: physical kinematic viscosity in __m^2 / s__
+            (T)   1.0       // physDensity: physical density in __kg / m^3__
+    );
+    // Prints the converter log as console output
+    converter.print();
+    // Writes the converter log in a file
+    converter.write("nozzle3d");
+
+    Vector<T,3> origin;
+    Vector<T,3> extend( 54.*converter.getCharPhysLength(), 11.*converter.getCharPhysLength()+2.*converter.getConversionFactorLength(), 11.*converter.getCharPhysLength()+2.*converter.getConversionFactorLength() );
+
+    IndicatorCuboid3D<T> cuboid( extend,origin );
+
+    CuboidGeometry3D<T> cuboidGeometry( cuboid, converter.getConversionFactorLength(), singleton::mpi().getSize() );
+    HeuristicLoadBalancer<T> loadBalancer( cuboidGeometry );
+
+    // === 2nd Step: Prepare Geometry ===
+
+    SuperGeometry3D<T> superGeometry( cuboidGeometry, loadBalancer, 2 );
+    prepareGeometry( converter, cuboid, superGeometry );
+
+    // === 3rd Step: Prepare Lattice ===
+
+    SuperLattice3D<T, DESCRIPTOR> sLattice( superGeometry );
+
+    Dynamics<T, DESCRIPTOR>* bulkDynamics;
+    const T omega = converter.getLatticeRelaxationFrequency();
+#if defined(RLB)
+    bulkDynamics = new RLBdynamics<T, DESCRIPTOR>( omega, instances::getBulkMomenta<T, DESCRIPTOR>() );
+#elif defined(Smagorinsky)
+    bulkDynamics = new SmagorinskyBGKdynamics<T, DESCRIPTOR>( omega, instances::getBulkMomenta<T, DESCRIPTOR>(),
+                                                              0.15);
+#elif defined(ShearSmagorinsky)
+    bulkDynamics = new ShearSmagorinskyBGKdynamics<T, DESCRIPTOR>( omega, instances::getBulkMomenta<T, DESCRIPTOR>(),
+      0.15);
+#elif defined(Krause)
+  bulkDynamics = new KrauseBGKdynamics<T, DESCRIPTOR>( omega, instances::getBulkMomenta<T, DESCRIPTOR>(),
+      0.15);
+#else //ConsitentStrainSmagorinsky
+  bulkDynamics = new ConStrainSmagorinskyBGKdynamics<T, DESCRIPTOR>( omega, instances::getBulkMomenta<T, DESCRIPTOR>(),
+      0.05);
+#endif
+
+    sOnLatticeBoundaryCondition3D<T, DESCRIPTOR> sBoundaryCondition( sLattice );
+    createInterpBoundaryCondition3D<T, DESCRIPTOR> ( sBoundaryCondition );
+
+    sOffLatticeBoundaryCondition3D<T, DESCRIPTOR> sOffBoundaryCondition( sLattice );
+    createBouzidiBoundaryCondition3D<T, DESCRIPTOR> ( sOffBoundaryCondition );
+
+    prepareLattice( sLattice, converter, *bulkDynamics, sBoundaryCondition, sOffBoundaryCondition, superGeometry );
+
+    // === 4th Step: Main Loop with Timer ===
+
+    Timer<T> timer( converter.getLatticeTime( maxPhysT ), superGeometry.getStatistics().getNvoxel() );
+    timer.start();
+
+    for ( int iT = 0; iT <= converter.getLatticeTime( maxPhysT ); ++iT ) {
+        // === 5ath Step: Apply filter
+#ifdef ADM
+        SuperLatticeADM3D<T, DESCRIPTOR> admF( sLattice, 0.01, 2 );
+    admF.execute( superGeometry, 1 );
+#endif
+        // === 5bth Step: Definition of Initial and Boundary Conditions ===
+        setBoundaryValues( converter, sLattice, superGeometry, iT );
+
+        // === 6th Step: Collide and Stream Execution ===
+        sLattice.collideAndStream();
+
+        // === 7th Step: Computation and Output of the Results ===
+        getResults( sLattice, converter, iT, superGeometry, timer );
+    }
+    timer.stop();
+    timer.printSummary();
+    delete bulkDynamics;
+}
