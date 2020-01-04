@@ -29,6 +29,9 @@ Follow their instructions :
 https://www.paraview.org/Wiki/ParaView:Build_And_Install
 ```
 
+In the ccmake install config (use c to compile and g to generate) :
+* change QT_DIR to /pathtoQT/gcc_64/lib/cmake
+
 ### openlb installation :
 
 * Dependencies :
