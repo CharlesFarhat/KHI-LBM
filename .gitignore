@@ -6,3 +6,5 @@ cmake-build-debug/
 tmp/
 
 bin/KHI-LBM
+
+bin/tmp_RB/

@@ -18,4 +18,6 @@ LINK_DIRECTORIES(${OpenLB}/build/precompiled/lib)
 
 
 add_executable(KHI-LBM ./src/LBM-Sim.cpp)
+add_executable(RB-LBM src/RB-LBM.cpp)
+target_link_libraries(RB-LBM olb z)
 target_link_libraries(KHI-LBM olb z)
