@@ -95,11 +95,23 @@ void setBoundaryValues( SuperLattice3D<T, DESCRIPTOR>& sLatticeOne,
                         SuperLattice3D<T, DESCRIPTOR>& sLatticeTwo,
                         T force, int iT, SuperGeometry3D<T>& superGeometry ) {
 
+  OstreamManager clout( std::cout,"setBoundaryValues" );
+
+
   if ( iT==0 ) {
 
+    clout << "Setting boundaries values ..." << std::endl;
     AnalyticalConst3D<T,T> noise( 4.e-2 );
+
+    // define speed  of the 2 fluids  :
     std::vector<T> v( 3,T() );
-    AnalyticalConst3D<T,T> zeroV( v );
+    std::vector<T> v1 = {0,0,1};
+    std::vector<T> v2 = {0,0,0};
+
+    AnalyticalConst3D<T,T> Vf1( v1 );
+    AnalyticalConst3D<T,T> zeroV( v2 );
+
+
     AnalyticalConst3D<T,T> zero( 0. );
     AnalyticalLinear3D<T,T> one( 0.,-force*descriptors::invCs2<T,DESCRIPTOR>(),0.,0.98+force*ny*descriptors::invCs2<T,DESCRIPTOR>() );
     AnalyticalConst3D<T,T> onePlus( 0.98+force*ny/2.*descriptors::invCs2<T,DESCRIPTOR>() );
@@ -139,6 +151,7 @@ void setBoundaryValues( SuperLattice3D<T, DESCRIPTOR>& sLatticeOne,
     // Make the lattice ready for simulation
     sLatticeOne.initialize();
     sLatticeTwo.initialize();
+    clout << "Setting boundaries values ..." << std::endl;
   }
 }
 
@@ -182,9 +195,9 @@ void getResults( SuperLattice3D<T, DESCRIPTOR>& sLatticeTwo,
     vtmWriter.addFunctor( density );
     vtmWriter.write( iT );
 
-    BlockReduction3D2D<T> planeReduction( density, {0, 0, 1} );
+    //BlockReduction3D2D<T> planeReduction( density, {0, 0, 1} );
     // write output as JPEG
-    heatmap::write(planeReduction, iT);
+    //heatmap::write(planeReduction, iT);
 
     clout << "Writing VTK ... OK" << std::endl;
   }

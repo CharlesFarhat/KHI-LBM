@@ -8,3 +8,7 @@ tmp/
 bin/KHI-LBM
 
 bin/tmp_RB/
+
+bin/tmp_cyl/
+
+bin/tmp_KHI/
