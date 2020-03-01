@@ -7,7 +7,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fopenmp -DPARALLEL_MODE_OMP -DOLB_PRECO
 set(EXECUTABLE_OUTPUT_PATH ./../bin)
 
 #set openlb folder PLEASE SET HERE :
-set(OpenLB /home/hades/ProgramFiles/OpenLB-1.3)
+set(OpenLB ./Framework/OpenLB)
 
 include_directories("${OpenLB}/src")
 include_directories("${OpenLB}/src/external")
