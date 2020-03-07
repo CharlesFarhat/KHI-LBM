@@ -49,6 +49,34 @@ https://www.openlb.net/download/
   * change config.mk to enable OMPI
   * Then : ``` make -j 15 ```
 
+### OpenFOAM Install :
+
+* Dependencies :
+
+```
+sudo apt-get install build-essential flex bison cmake zlib1g-dev libboost-system-dev libboost-thread-dev libopenmpi-dev openmpi-bin gnuplot libreadline-dev libncurses-dev libxt-dev
+sudo apt-get install libscotch-dev libcgal-dev
+```
+Change /etc/bashrc parameter : project directory to current value then :
+```
+source ~/OpenFOAM/OpenFOAM-v1912/etc/bashrc
+```
+
+Test the system readiness :
+
+```
+foamSystemCheck
+```
+Change to the main OpenFOAM directory ($WM_PROJECT_DIR). If this fails, the environment is not configured correctly
+```
+foam
+```
+
+Compile OpenFOAM :
+```
+./Allwmake 
+```
+
 ## Usage
 
 Compile the cpp source code for simulation, then run it with command :
